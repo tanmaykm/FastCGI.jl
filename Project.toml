@@ -6,7 +6,6 @@ keywords = ["fastcgi", "julialang"]
 license = "MIT"
 desc = "Julia FastCGI client and server implementation"
 
-
 [deps]
 Sockets = "6462fe0b-24de-5631-8697-dd941f90decc"
 
@@ -16,3 +15,6 @@ julia = "≥ 1.0.0"
 [extras]
 Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+
+[targets]
+test = ["Test", "Random"]
