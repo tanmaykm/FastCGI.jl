@@ -1,4 +1,18 @@
 name = "FastCGI"
 uuid = "e8c3bf11-b54e-5fcf-8bd0-49e7696ff13f"
-authors = ["tan <tanmaykm@gmail.com>"]
+authors = ["Tanmay Mohapatra <tanmaykm@gmail.com>"]
 version = "0.1.0"
+keywords = ["fastcgi", "julialang"]
+license = "MIT"
+desc = "Julia FastCGI client and server implementation"
+
+
+[deps]
+Sockets = "6462fe0b-24de-5631-8697-dd941f90decc"
+
+[compat]
+julia = "≥ 1.0.0"
+
+[extras]
+Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
