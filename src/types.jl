@@ -272,4 +272,3 @@ function ==(o1::T, o2::T) where {T <: FCGIMsgComponent}
     end
     true
 end
-
