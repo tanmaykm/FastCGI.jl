@@ -222,9 +222,7 @@ struct FCGIRecord
     content::Vector{UInt8}
 
     function FCGIRecord(io::T) where {T <: IO}
-        @debug("reading header")
         header = FCGIHeader(io)
-        @debug("reading record", type=header.type, contentlength=contentlength(header))
         content = _readbytes(io, contentlength(header))
         _ = _readbytes(io, header.paddingLength) # discard padding
         new(header, content)
