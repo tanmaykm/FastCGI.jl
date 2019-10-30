@@ -62,31 +62,31 @@ function test_types()
     end
 end
 
-function test_bufferedpipe()
-    @testset "buffered pipes" begin
-        inpipe = Pipe()
-        in = FastCGI.BufferedPipe(inpipe; delay=10.0, bytelimit=10)
+function test_bufferedoutput()
+    @testset "buffered output" begin
         out = IOBuffer()
-        proc = run(pipeline(`cat`, stdin=inpipe, stdout=out), wait=false)
-        write(in, "hello")
-        sleep(2)
+        buffout = FastCGI.BufferedOutput((data)->write(out,data); delay=5.0, bytelimit=10)
+        write(buffout, "hello")
+        sleep(1)
         @test position(out) == 0
-        write(in, "hello")
+        write(buffout, "hello")
         sleep(1)
         @test position(out) == 10
-        write(in, "hello")
-        sleep(2)
+        write(buffout, "hello")
+        sleep(1)
         @test position(out) == 10
-        sleep(11)
+        sleep(5)
         @test position(out) == 15
-        write(in, "hello")
-        flush(in)
+        write(buffout, "hello")
+        flush(buffout)
         sleep(1)
         @test position(out) == 20
-        close(in)
-        @test !isopen(inpipe)
+        close(buffout)
+        @test !isopen(buffout.iob)
+        sleep(6)
+        @test istaskdone(buffout.waiter)
     end
 end
 
 test_types()
-test_bufferedpipe()
+test_bufferedoutput()
