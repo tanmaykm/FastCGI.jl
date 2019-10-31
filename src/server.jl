@@ -87,8 +87,11 @@ function streamstdin(req::ServerRequest, inp::Pipe, process::Base.Process)
                 stdinclosed = true
             elseif rec.header.type === FCGIHeaderType.STDIN
                 if isempty(rec.content)
+                    @debug("streamstdin: reached end of streamstdin")
+                    close(inp)
                     stdinclosed = true
                 else
+                    @debug("streamstdin: content", len=length(rec.content))
                     write(inp, rec.content)
                 end
             else
@@ -134,16 +137,21 @@ function monitorinputs(req::ServerRequest)
     (req.state === 0x0) || monitorabort(req, process)   # monitor ABORT_REQUEST if not already aborted
     nothing
 end
+
 function monitoroutput(req::ServerRequest, pipe::Pipe, type::UInt8)
     sent = false
-    while isopen(pipe)
-        bytes = readavailable(pipe)
-        if !isempty(bytes)
-            @debug("sending output", type=reqtypetostring(type), nbytes=length(bytes))
-            put!(req.out, FCGIRecord(type, req.id, bytes))
-            sent = true
-        end
+    buffpipe = BufferedOutput() do bytes
+        @debug("sending output", type=reqtypetostring(type), nbytes=length(bytes))
+        put!(req.out, FCGIRecord(type, req.id, bytes))
+        sent = true
     end
+    bytes = readavailable(pipe)
+    while !isempty(bytes)
+        write(buffpipe, bytes)
+        bytes = readavailable(pipe)
+    end
+    flush(buffpipe)
+    close(buffpipe)
     if sent
         # if we ever sent something on a stream, we should send an end marker for it
         @debug("sending end of output", type=reqtypetostring(type))
@@ -215,8 +223,10 @@ function process(req::ServerRequest)
                     process = req.runner.process
                     wait(process)
                     exitcode = process.exitcode
-                    close(req.runner.out)
-                    close(req.runner.err)
+                    @debug("process terminated", exitcode)
+                    # close the input ends of the stdio streams
+                    close(req.runner.out.in)
+                    close(req.runner.err.in)
                     close(req.in)
                 end
                 req.runner.inputmon = @async monitorinputs(req) # stream inputs
@@ -246,14 +256,15 @@ function ServerConnection(asock::T, onstop::Function) where {T<:FCGISocket}
     conn.processorout = @async processout(conn)
     conn
 end
-function stop(conn::ServerConnection{T}; checkinterval::Float64=0.2) where {T<:FCGISocket}
+function stop(conn::ServerConnection{T}; checkinterval::Float64=0.01) where {T<:FCGISocket}
     @debug("stopping server connection")
-    while !istaskdone(conn.processorout) && isready(conn.out)
-        sleep(checkinterval)
+    timedwait(checkinterval) do
+        istaskdone(conn.processorout) || !isready(conn.out)
     end
     conn.stopsignal = true
     close(conn.out)
     wait(conn.processorout)
+    flush(conn.asock)
     close(conn.asock)
     wait(conn.processorin)
     empty!(conn.requests)
@@ -271,8 +282,8 @@ function processout(conn::ServerConnection{T}) where {T<:FCGISocket}
     while !conn.stopsignal && isopen(conn.asock)
         try
             resp = take!(conn.out)
-            @debug("writing response packet", type=reqtypetostring(resp.header.type))
-            fcgiwrite(conn.asock, resp)
+            nbytes = fcgiwrite(conn.asock, resp)
+            @debug("wrote response packet", type=reqtypetostring(resp.header.type), nbyteswritten=nbytes, contentlen=length(resp.content))
         catch ex
             if !isa(ex, InvalidStateException) && !(isa(ex, Base.IOError) && (ex.code == -103))
                 @warn("ServerConnection output processor failed with exception", ex)

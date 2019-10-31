@@ -66,18 +66,19 @@ function test_bufferedoutput()
     @testset "buffered output" begin
         out = IOBuffer()
         buffout = FastCGI.BufferedOutput((data)->write(out,data); delay=5.0, bytelimit=10)
-        write(buffout, "hello")
+        bytes = UInt8[1,2,3,4,5]
+        write(buffout, bytes)
         sleep(1)
         @test position(out) == 0
-        write(buffout, "hello")
+        write(buffout, bytes)
         sleep(1)
         @test position(out) == 10
-        write(buffout, "hello")
+        write(buffout, bytes)
         sleep(1)
         @test position(out) == 10
         sleep(5)
         @test position(out) == 15
-        write(buffout, "hello")
+        write(buffout, bytes)
         flush(buffout)
         sleep(1)
         @test position(out) == 20

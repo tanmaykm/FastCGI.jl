@@ -255,11 +255,23 @@ function fcgiwrite(io::T, nv::FCGINameValuePair) where {T<:IO}
 end
 fcgiwrite(io::T, params::FCGIParams) where {T<:IO} = sum([fcgiwrite(io, nv) for nv in params.nvpairs])
 function fcgiwrite(io::T, rec::FCGIRecord) where {T<:IO}
-    nbytes = fcgiwrite(io, rec.header)
-    nbytes += write(io, rec.content)
+    iob = IOBuffer()
+    nbytes = fcgiwrite(iob, rec.header)
+    nbytes += write(iob, rec.content)
     if rec.header.paddingLength > 0
-        nbytes += write(io, zeros(UInt8, rec.header.paddingLength))
+        nbytes += write(iob, zeros(UInt8, rec.header.paddingLength))
     end
+
+    b = take!(iob)
+    pos = write(io, b)
+    while pos < nbytes
+        pos += write(io, view(b, pos:nbytes))
+    end
+    #=
+    if nbytes != (length(rec.content)+HEADER_LEN+padding(length(rec.content)))
+        @warn("could not write all bytes!!", nbytes, expected=(length(rec.content)+HEADER_LEN+padding(length(rec.content))))
+    end
+    =#
     nbytes
 end
 
