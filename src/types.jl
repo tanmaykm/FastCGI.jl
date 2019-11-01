@@ -215,6 +215,10 @@ struct FCGIParams
         end
         new(nvpairs)
     end
+    function FCGIParams(nv::Dict{String,String})
+        nvpairs = [FCGINameValuePair(n,v) for (n,v) in nv]
+        new(nvpairs)
+    end
 end
 
 struct FCGIRecord
@@ -261,18 +265,7 @@ function fcgiwrite(io::T, rec::FCGIRecord) where {T<:IO}
     if rec.header.paddingLength > 0
         nbytes += write(iob, zeros(UInt8, rec.header.paddingLength))
     end
-
-    b = take!(iob)
-    pos = write(io, b)
-    while pos < nbytes
-        pos += write(io, view(b, pos:nbytes))
-    end
-    #=
-    if nbytes != (length(rec.content)+HEADER_LEN+padding(length(rec.content)))
-        @warn("could not write all bytes!!", nbytes, expected=(length(rec.content)+HEADER_LEN+padding(length(rec.content))))
-    end
-    =#
-    nbytes
+    writefully(io, iob)
 end
 
 const FCGIMsgComponent = Union{FCGIBeginRequest, FCGIEndRequest, FCGIUnknownType, FCGINameValuePair, FCGIParams, FCGIRecord}
@@ -282,3 +275,6 @@ function ==(o1::T, o2::T) where {T <: FCGIMsgComponent}
     end
     true
 end
+
+const FCGIServerSocket = Union{Sockets.TCPServer,Sockets.PipeServer}
+const FCGISocket = Union{TCPSocket,Base.PipeEndpoint}

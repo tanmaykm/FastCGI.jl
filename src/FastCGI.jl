@@ -3,7 +3,7 @@ module FastCGI
 using Sockets
 
 import Base: show, close, write, flush, ==
-export FCGIServer, process, stop
+export FCGIServer, FCGIClient, FCGIRequest, process, stop, set_server_param
 
 include("bufferedoutput.jl")
 include("types.jl")

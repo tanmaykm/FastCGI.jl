@@ -46,3 +46,12 @@ function flush(buff::BufferedOutput)
         end
     end
 end
+
+writefully(io::T, iob::IOBuffer) where {T <: IO} = writefully(io, take!(iob))
+function writefully(io::T, b::Vector{UInt8}, nbytes::Int=length(b)) where {T <: IO}
+    pos = write(io, b)
+    while pos < nbytes
+        pos += write(io, view(b, pos:nbytes))
+    end
+    nbytes
+end

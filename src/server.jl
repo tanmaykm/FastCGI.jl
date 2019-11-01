@@ -1,5 +1,3 @@
-const FCGIServerSocket = Union{Sockets.TCPServer,Sockets.PipeServer}
-const FCGISocket = Union{TCPSocket,Base.PipeEndpoint}
 const VALID_SERVER_REQ_TYPES = (FCGIHeaderType.ABORT_REQUEST, FCGIHeaderType.PARAMS, FCGIHeaderType.STDIN)
 const SERVER_PARAMS = Dict{String,String}(
     "FCGI_MAX_CONNS"    =>  "100",
@@ -346,16 +344,23 @@ function processin(conn::ServerConnection{T}) where {T<:FCGISocket}
 end
 
 mutable struct FCGIServer{T<:FCGIServerSocket}
+    addr::String
     lsock::T
     conns::Vector{ServerConnection}
     processor::Union{Task,Nothing}
     lck::ReentrantLock
 end
 function FCGIServer(path::String)
-    server = FCGIServer(listen(path), Vector{ServerConnection}(), nothing, ReentrantLock())
+    server = FCGIServer(path, listen(path), Vector{ServerConnection}(), nothing, ReentrantLock())
     server.processor = @async process(server)
     server
 end
+function FCGIServer(ip::IPv4, port::Integer)
+    server = FCGIServer("$(ip):$(Int(port))", listen(ip, port), Vector{ServerConnection}(), nothing, ReentrantLock())
+    server.processor = @async process(server)
+    server
+end
+show(io::IO, server::FCGIServer) = print(io, "FCGIServer(", server.addr, ", ", isopen(server.lsock) ? "open" : "closed", ")")
 stop(server::FCGIServer) = (close(server.lsock); nothing)
 function delconn(server::FCGIServer, conn::ServerConnection)
     lock(server.lck) do
