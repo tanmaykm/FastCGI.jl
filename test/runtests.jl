@@ -89,5 +89,39 @@ function test_bufferedoutput()
     end
 end
 
-test_types()
+function test_clientserver()
+    @testset "client server" begin
+        testdir = dirname(@__FILE__)
+        socket = joinpath(testdir, "fcgi.socket")
+        cgiscript = joinpath(testdir, "hello.sh")
+
+        # start server
+        server = FCGIServer(socket)
+        servertask = @async process(server)
+        @test issocket(socket)
+
+        # run client
+        client = FCGIClient(socket)
+        headers = Dict("SCRIPT_FILENAME"=>cgiscript)
+
+        # do multiple requests
+        for idx in 1:10
+            request = FCGIRequest(; headers=headers, keepconn=true)
+            process(client, request)
+            wait(request.isdone)
+            @test isempty(take!(request.err))
+            response = take!(request.out)
+            @test length(response) > 0
+        end
+
+        # close
+        close(client)
+        stop(server)
+        @test !isopen(client.csock)
+        @test !isopen(server.lsock)
+    end
+end
+
 test_bufferedoutput()
+test_types()
+test_clientserver()
