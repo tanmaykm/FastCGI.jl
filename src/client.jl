@@ -30,6 +30,7 @@ FCGIClient(path::String) = FCGIClient(path, connect(path))
 FCGIClient(ip::IPv4, port::Integer) = FCGIClient("$(ip):$(Int(port))", connect(ip, port))
 show(io::IO, client::FCGIClient) = print(io, "FCGIClient(", client.addr, ", ", isopen(client.csock) ? "open" : "closed", ")")
 close(client::FCGIClient) = close(client.csock)
+isrunning(client::FCGIClient) = isopen(client.csock)
 function fcgiwrite(client::FCGIClient{T}, rec::FCGIRecord) where {T <: FCGISocket}
     lock(client.lck) do
         fcgiwrite(client.csock, rec)

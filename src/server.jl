@@ -10,234 +10,20 @@ function set_server_param(name::String, value::String)
     nothing
 end
 
+function set_server_runner(runnertype)
+    @assert supertype(runnertype) === Runner
+    global FCGI_RUNNER
+    FCGI_RUNNER = runnertype
+    nothing
+end
+
 """
-Holds the runner state.
-Items in this struct are needed in the runner task (Runner.runner).
-But keeping it in the struct makes it cleaner and also makes them accessible for debugging purpose.
+Process a single FastCGI client connection.
+A client may send multiple requests over the same connection by setting the `keep` flag in the BEGIN_REQUEST message.
+Handles all messages that are not specific to any request id (including the BEGIN_REQUEST message that initializes a request).
+Initializes and maintains ServerRequest instances for each new request id.
+All messages targeted to ongoing request ids are handled over to respective ServerRequest instances.
 """
-mutable struct Runner
-    inp::Pipe                               # stdin
-    out::Pipe                               # stdout
-    err::Pipe                               # stderr
-    process::Union{Base.Process,Nothing}    # launched process
-    runner::Union{Task,Nothing}             # runner task
-    procmon::Union{Task,Nothing}            # process monitor
-    inputmon::Union{Task,Nothing}           # input monitor
-    outputmon::Union{Task,Nothing}          # output monitor
-
-    function Runner()
-        new(Pipe(), Pipe(), Pipe())
-    end
-end
-
-mutable struct ServerRequest
-    id::UInt16                          # request id
-    state::UInt8                        # 1: init, 2: run, 0: stop
-    onclose::Function                   # onclose function to cleanup and close connection if keepconn is false
-    in::Channel{FCGIRecord}             # in message channel
-    out::Channel{FCGIRecord}            # out message channel (of the connection that originated this request)
-    runner::Runner                      # runner task
-
-    function ServerRequest(id::UInt16, onclose::Function, out::Channel{FCGIRecord})
-        @debug("starting request", id)
-        req = new(id, 0x1, onclose, Channel{FCGIRecord}(128), out, Runner())
-        req.runner.runner = @async process(req)
-        req
-    end
-end
-function readparams(req::ServerRequest)
-    params = Dict{String,String}()
-
-    # accept params
-    while req.state === 0x1
-        @debug("readparams: waiting to take from req.in")
-        rec = take!(req.in)
-        @debug("readparams: got record", type=reqtypetostring(rec.header.type))
-        if rec.header.type === FCGIHeaderType.ABORT_REQUEST
-            req.state = 0x0
-        elseif rec.header.type === FCGIHeaderType.PARAMS
-            if isempty(rec.content)
-                @debug("readparams: reached end of params")
-                # empty params request indicates end of params
-                req.state = 0x2
-            else
-                @debug("readparams: content", len=length(rec.content))
-                for nv in FCGIParams(rec.content).nvpairs
-                    params[nv.name] = nv.value
-                end
-            end
-        else
-            # ignore (but warn) any unexpected messages for this request id
-            @warn("unexpected message type", type=rec.header.type)
-        end
-    end
-    params
-end
-function streamstdin(req::ServerRequest, inp::Pipe, process::Base.Process)
-    @debug("monitorinputs: reading stdin")
-    try
-        stdinclosed = false
-        while !stdinclosed
-            rec = take!(req.in)
-            if rec.header.type === FCGIHeaderType.ABORT_REQUEST
-                kill(process)
-                req.state = 0x0
-                stdinclosed = true
-            elseif rec.header.type === FCGIHeaderType.STDIN
-                if isempty(rec.content)
-                    @debug("streamstdin: reached end of streamstdin")
-                    close(inp)
-                    stdinclosed = true
-                else
-                    @debug("streamstdin: content", len=length(rec.content))
-                    write(inp, rec.content)
-                end
-            else
-                # ignore (but warn) any unexpected messages for this request id
-                @warn("unexpected message type", type=rec.header.type)
-            end
-        end
-    catch ex
-        if !isa(ex, InvalidStateException)
-            @error("exception in streamstdin", ex)
-            rethrow(ex)
-        else
-            @debug("exiting streamstdin: request closed")
-        end
-    end
-end
-function monitorabort(req::ServerRequest, process::Base.Process)
-    @debug("monitorinputs: checking abort")
-    try
-        while req.state !== 0x0
-            rec = take!(req.in)
-            if rec.header.type === FCGIHeaderType.ABORT_REQUEST
-                kill(process)
-                req.state = 0x0
-            else
-                # ignore (but warn) any unexpected messages for this request id
-                @warn("unexpected message type", type=rec.header.type)
-            end
-        end
-    catch ex
-        if !isa(ex, InvalidStateException)
-            @error("exception in monitorabort", ex)
-            rethrow(ex)
-        else
-            @debug("exiting monitorabort: request closed")
-        end
-    end
-end
-function monitorinputs(req::ServerRequest)
-    inp = req.runner.inp
-    process = req.runner.process
-    streamstdin(req, inp, process)
-    (req.state === 0x0) || monitorabort(req, process)   # monitor ABORT_REQUEST if not already aborted
-    nothing
-end
-
-function monitoroutput(req::ServerRequest, pipe::Pipe, type::UInt8)
-    sent = false
-    buffpipe = BufferedOutput() do bytes
-        @debug("sending output", type=reqtypetostring(type), nbytes=length(bytes))
-        put!(req.out, FCGIRecord(type, req.id, bytes))
-        sent = true
-    end
-    bytes = readavailable(pipe)
-    while !isempty(bytes)
-        write(buffpipe, bytes)
-        bytes = readavailable(pipe)
-    end
-    flush(buffpipe)
-    close(buffpipe)
-    if sent
-        # if we ever sent something on a stream, we should send an end marker for it
-        @debug("sending end of output", type=reqtypetostring(type))
-        put!(req.out, FCGIRecord(type, req.id, UInt8[]))
-    end
-    @debug("finished monitoroutput", type=reqtypetostring(type))
-    nothing
-end
-function monitoroutputs(req::ServerRequest)
-    @sync begin
-        @async monitoroutput(req, req.runner.out, FCGIHeaderType.STDOUT)
-        @async monitoroutput(req, req.runner.err, FCGIHeaderType.STDERR)
-    end
-end
-function getcommand(params::Dict{String,String})
-    get(params, "SCRIPT_FILENAME") do
-        params["DOCUMENT_ROOT"] * params["SCRIPT_NAME"]
-    end
-end
-function launchproc(req::ServerRequest, params::Dict{String,String})
-    cmdpath = getcommand(params)
-    @debug("launching command", cmdpath)
-    if !isfile(cmdpath)
-        err = "cmdpath not found: $cmdpath"
-        @warn(err)
-        return 404, err
-    end
-    try
-        cmd = Cmd(`$cmdpath`; env=params)
-        req.runner.process = run(pipeline(cmd, stdin=req.runner.inp, stdout=req.runner.out, stderr=req.runner.err), wait=false)
-        return 0, ""
-    catch ex
-        @warn("process exception", cmdpath, params, ex)
-        return 500, "process exception"
-    end
-end
-function close(req::ServerRequest, exitcode::Integer)
-    @debug("closing request", id=req.id, state=req.state, exitcode)
-    reqcomplete = FCGIEndRequest(UInt32(exitcode), FCGIEndRequestProtocolStatus.REQUEST_COMPLETE)
-    put!(req.out, FCGIRecord(FCGIHeaderType.END_REQUEST, req.id, reqcomplete))
-    close(req)
-    nothing
-end
-function close(req::ServerRequest)
-    close(req.runner.inp)
-    close(req.runner.out)
-    close(req.runner.err)
-    close(req.in)
-    @debug("calling onclose")
-    (req.onclose)()
-    nothing
-end
-function process(req::ServerRequest)
-    params = readparams(req)
-    @info("processing", SCRIPT_FILENAME=get(params, "SCRIPT_FILENAME", ""), SCRIPT_NAME=get(params, "SCRIPT_NAME", ""))
-    @debug("read request params", id=req.id, state=req.state, params)
-    if req.state !== 0x2
-        @warn("abandoning request", id=req.id)
-        return close(req)
-    end
-
-    exitcode, errmsg = launchproc(req, params)
-    @debug("launched process", exitcode, errmsg)
-    if exitcode == 0
-        try
-            @sync begin
-                # process was launched successfully
-                req.runner.procmon = @async begin
-                    process = req.runner.process
-                    wait(process)
-                    exitcode = process.exitcode
-                    @debug("process terminated", exitcode)
-                    # close the input ends of the stdio streams
-                    close(req.runner.out.in)
-                    close(req.runner.err.in)
-                    close(req.in)
-                end
-                req.runner.inputmon = @async monitorinputs(req) # stream inputs
-                req.runner.outputmon = @async monitoroutputs(req) # stream stdout/stderr
-            end
-        catch ex
-            @warn("process exception", ex, params)
-            exitcode = 500
-        end
-    end
-    close(req, exitcode)
-end
-
 mutable struct ServerConnection{T<:FCGISocket}
     asock::T
     out::Channel{FCGIRecord}
@@ -246,10 +32,11 @@ mutable struct ServerConnection{T<:FCGISocket}
     processorout::Union{Task,Nothing}
     stopsignal::Bool
     onstop::Function
+    lck::ReentrantLock
 end
 function ServerConnection(asock::T, onstop::Function) where {T<:FCGISocket}
     @debug("accepting server connection")
-    conn = ServerConnection(asock, Channel{FCGIRecord}(128), Dict{UInt16,ServerRequest}(), nothing, nothing, false, onstop)
+    conn = ServerConnection(asock, Channel{FCGIRecord}(128), Dict{UInt16,ServerRequest}(), nothing, nothing, false, onstop, ReentrantLock())
     conn.processorin = @async processin(conn)
     conn.processorout = @async processout(conn)
     conn
@@ -265,14 +52,33 @@ function stop(conn::ServerConnection{T}; checkinterval::Float64=0.01) where {T<:
     flush(conn.asock)
     close(conn.asock)
     wait(conn.processorin)
-    empty!(conn.requests)
+    abandonallreq(conn)
     (conn.onstop)(conn)
     nothing
 end
+function abandonallreq(conn::ServerConnection)
+    lock(conn.lck) do
+        empty!(conn.requests)
+    end
+    nothing
+end
+function addreq(reqf, conn::ServerConnection, reqid::UInt16)
+    lock(conn.lck) do
+        conn.requests[reqid] = reqf()
+    end
+    nothing
+end
+function getreq(conn::ServerConnection, reqid::UInt16)
+    lock(conn.lck) do
+        get(conn.requests, reqid, nothing)
+    end
+end
 function onclosereq(conn::ServerConnection{T}, reqid::UInt16, keepconn::Bool) where {T<:FCGISocket}
     @debug("connection onclosereq", reqid, keepconn)
-    delete!(conn.requests, reqid)
-    keepconn || stop(conn)
+    lock(conn.lck) do
+        delete!(conn.requests, reqid)
+        keepconn || stop(conn)
+    end
     return
 end
 function processout(conn::ServerConnection{T}) where {T<:FCGISocket}
@@ -305,7 +111,9 @@ function processin(conn::ServerConnection{T}) where {T<:FCGISocket}
                 (reqrole == FCGIRequestRole.RESPONDER) || error("FCGI feature not supported: role=$reqrole")
                 # create a new entry in requests table
                 @debug("beginning request", keep=keepconn(begreq))
-                conn.requests[reqid] = ServerRequest(reqid, ()->onclosereq(conn, reqid, keepconn(begreq)), conn.out)
+                addreq(conn, reqid) do
+                    ServerRequest(reqid, ()->onclosereq(conn, reqid, keepconn(begreq)), conn.out)
+                end
             elseif record.header.type == FCGIHeaderType.GET_VALUES
                 # respond with server params
                 querynvs = FCGIParams(record.content)
@@ -321,8 +129,12 @@ function processin(conn::ServerConnection{T}) where {T<:FCGISocket}
                 put!(conn.out, FCGIRecord(FCGIHeaderType.GET_VALUES_RESULT, reqid, respnvs))
             elseif record.header.type in VALID_SERVER_REQ_TYPES
                 # push record to process queue
-                reqhandler = conn.requests[reqid]
-                push!(reqhandler.in, record)
+                reqhandler = getreq(conn, reqid)
+                if reqhandler === nothing
+                    @warn("ignoring invalid request", reqid, type=record.header.type)
+                else
+                    push!(reqhandler.in, record)
+                end
             else
                 @warn("FCGI feature not supported: header", reqid, type=record.header.type)
                 unk = FCGIUnknownType(record.header.type)
@@ -336,13 +148,18 @@ function processin(conn::ServerConnection{T}) where {T<:FCGISocket}
             end
             close(conn.asock)
             close(conn.out)
-            empty!(conn.requests)
+            abandonallreq(conn)
             conn.stopsignal = true
         end
     end
     stop(conn)
 end
 
+"""
+The FCGIServer sets up a listening socket on which it accepts incoming client connections.
+For each incoming connection, creates a new ServerConnection instance and starts a separate
+processing task for messages from that connection. Maintains a list of such connections.
+"""
 mutable struct FCGIServer{T<:FCGIServerSocket}
     addr::String
     lsock::T
@@ -360,18 +177,35 @@ function FCGIServer(ip::IPv4, port::Integer)
     server.processor = @async process(server)
     server
 end
-show(io::IO, server::FCGIServer) = print(io, "FCGIServer(", server.addr, ", ", isopen(server.lsock) ? "open" : "closed", ")")
-stop(server::FCGIServer) = (close(server.lsock); nothing)
+show(io::IO, server::FCGIServer) = print(io, "FCGIServer(", server.addr, ", ", isopen(server.lsock) ? "open" : "closed", ", ", length(server.conns), " connections)")
+
+""" Request stopping of the server by closing the listen socket """
+function stop(server::FCGIServer)
+    close(server.lsock)
+    nothing
+end
+
 function delconn(server::FCGIServer, conn::ServerConnection)
     lock(server.lck) do
         filter!((x)->(x !== conn), server.conns)
     end
     nothing
 end
+
+""" Whether the server is running and listening for new connections """
+isrunning(server::FCGIServer) = isopen(server.lsock)
+
+"""
+Processes incoming connections on the listen socket, by creating a separate asynchronous handler for each new connection.
+Handling of messages on a connection is implemented in ServerConnection.
+"""
 function process(server::FCGIServer{T}) where {T<:FCGIServerSocket}
     while isopen(server.lsock)
         try
-            push!(server.conns, ServerConnection(accept(server.lsock), (conn)->delconn(server, conn)))
+            asock = accept(server.lsock)
+            lock(server.lck) do
+                push!(server.conns, ServerConnection(asock, (conn)->delconn(server, conn)))
+            end
         catch ex
             if !(isa(ex, Base.IOError) && (ex.code == -103))
                 @error("unhandled error in server", ex)

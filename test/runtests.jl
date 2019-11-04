@@ -101,6 +101,7 @@ function test_clientserver()
             server = FCGIServer(socket)
             servertask = @async process(server)
             @test issocket(socket)
+            @test isrunning(server)
 
             # run client
             client = FCGIClient(socket)
@@ -110,6 +111,7 @@ function test_clientserver()
             for idx in 1:10
                 request = FCGIRequest(; headers=headers, keepconn=true)
                 process(client, request)
+                @test isrunning(client)
                 wait(request.isdone)
                 @test isempty(take!(request.err))
                 response = take!(request.out)
@@ -119,8 +121,8 @@ function test_clientserver()
             # close
             close(client)
             stop(server)
-            @test !isopen(client.csock)
-            @test !isopen(server.lsock)
+            @test !isrunning(client)
+            @test !isrunning(server)
         end
         @testset "TCP Socket" begin
             testdir = dirname(@__FILE__)
@@ -132,7 +134,7 @@ function test_clientserver()
             server = FCGIServer(host, port)
             servertask = @async process(server)
             @test isa(server.lsock, Sockets.TCPServer)
-            @test isopen(server.lsock)
+            @test isrunning(server)
 
             # run client
             client = FCGIClient(host, port)
@@ -151,8 +153,8 @@ function test_clientserver()
             # close
             close(client)
             stop(server)
-            @test !isopen(client.csock)
-            @test !isopen(server.lsock)
+            @test !isrunning(client)
+            @test !isrunning(server)
         end
     end
 end
