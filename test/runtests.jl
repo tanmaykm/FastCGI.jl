@@ -1,6 +1,7 @@
 using FastCGI
 using Test
 using Random
+using Sockets
 
 function test_types()
     @testset "utility methods" begin
@@ -90,35 +91,71 @@ function test_bufferedoutput()
 end
 
 function test_clientserver()
-    @testset "client server" begin
-        testdir = dirname(@__FILE__)
-        socket = joinpath(testdir, "fcgi.socket")
-        cgiscript = joinpath(testdir, "hello.sh")
+    @testset "client-server" begin
+        @testset "Unix Domain Socket" begin
+            testdir = dirname(@__FILE__)
+            socket = joinpath(testdir, "fcgi.socket")
+            cgiscript = joinpath(testdir, "hello.sh")
 
-        # start server
-        server = FCGIServer(socket)
-        servertask = @async process(server)
-        @test issocket(socket)
+            # start server
+            server = FCGIServer(socket)
+            servertask = @async process(server)
+            @test issocket(socket)
+            @test isrunning(server)
 
-        # run client
-        client = FCGIClient(socket)
-        headers = Dict("SCRIPT_FILENAME"=>cgiscript)
+            # run client
+            client = FCGIClient(socket)
+            headers = Dict("SCRIPT_FILENAME"=>cgiscript)
 
-        # do multiple requests
-        for idx in 1:10
-            request = FCGIRequest(; headers=headers, keepconn=true)
-            process(client, request)
-            wait(request.isdone)
-            @test isempty(take!(request.err))
-            response = take!(request.out)
-            @test length(response) > 0
+            # do multiple requests
+            for idx in 1:10
+                request = FCGIRequest(; headers=headers, keepconn=true)
+                process(client, request)
+                @test isrunning(client)
+                wait(request.isdone)
+                @test isempty(take!(request.err))
+                response = take!(request.out)
+                @test length(response) > 0
+            end
+
+            # close
+            close(client)
+            stop(server)
+            @test !isrunning(client)
+            @test !isrunning(server)
         end
+        @testset "TCP Socket" begin
+            testdir = dirname(@__FILE__)
+            cgiscript = joinpath(testdir, "hello.sh")
+            host = ip"127.0.0.1"
+            port = 8989
 
-        # close
-        close(client)
-        stop(server)
-        @test !isopen(client.csock)
-        @test !isopen(server.lsock)
+            # start server
+            server = FCGIServer(host, port)
+            servertask = @async process(server)
+            @test isa(server.lsock, Sockets.TCPServer)
+            @test isrunning(server)
+
+            # run client
+            client = FCGIClient(host, port)
+            headers = Dict("SCRIPT_FILENAME"=>cgiscript)
+
+            # do multiple requests
+            for idx in 1:10
+                request = FCGIRequest(; headers=headers, keepconn=true)
+                process(client, request)
+                wait(request.isdone)
+                @test isempty(take!(request.err))
+                response = take!(request.out)
+                @test length(response) > 0
+            end
+
+            # close
+            close(client)
+            stop(server)
+            @test !isrunning(client)
+            @test !isrunning(server)
+        end
     end
 end
 
