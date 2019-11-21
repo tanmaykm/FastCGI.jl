@@ -8,11 +8,12 @@ FastCGI is a binary protocol for interfacing interactive programs with a web ser
 
 FastCGI Specification: <http://www.mit.edu/~yandros/doc/specs/fcgi-spec.html>
 
-FastCGI.jl is a package that implements a Julia FastCGI client and server.
+FastCGI.jl is a package that implements a Julia FastCGI client and server. Additionally, it allows Julia functions to be used to respond directly to requests, which can be significantly faster and more efficient.
 
 ## Examples:
 
-### Using the server:
+### Using the server
+
 ```
 julia> using FastCGI
 
@@ -26,7 +27,8 @@ julia> process(server)
 ...
 ```
 
-### Using the client:
+### Using the client
+
 ```
 julia> using FastCGI
 
@@ -44,3 +46,29 @@ julia> wait(request.isdone)
 
 julia> response = String(take!(request.out));
 ```
+
+### Hooking up Julia functions
+
+FastCGI.jl server allows you to hook up a Julia function as a responder, instead of having to spawn an external process. This is much more efficient and fast. This can be an easy way to hook up a Julia backend to existing web servers like [Nginx](https://www.nginx.com/), [Apache](https://httpd.apache.org/) or [others](https://en.wikipedia.org/wiki/FastCGI#Web_servers_that_implement_FastCGI).
+
+To enable this mode, switch the runner to `FastCGI.FunctionRunner`:
+
+```
+FastCGI.set_server_runner(FastCGI.FunctionRunner)
+```
+
+Define the method that would respond to requests:
+
+```
+function fastcgi_responder(params, in, out, err)
+    # params: a Dict{String,String} with all fastcgi request parameters
+    # in: input stream to be read from
+    # out: output stream to write response to
+    # err: error stream to write errors to
+
+    # return the exit code that needs to be sent as the response
+    return 0
+end
+```
+
+Send requests as usual, ensuring that the `SCRIPT_FILENAME` parameter in requests contains the fully qualified function name to invoke.
