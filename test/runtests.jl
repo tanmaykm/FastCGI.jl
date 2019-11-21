@@ -3,6 +3,9 @@ using Test
 using Random
 using Sockets
 
+const NLOOPS = 10
+const STATS = Dict{String, Any}()
+
 function test_types()
     @testset "utility methods" begin
         @test FastCGI.BYTE(0x0102, 1) === 0x02
@@ -95,28 +98,21 @@ function test_clientserver()
         @testset "Unix Domain Socket" begin
             testdir = dirname(@__FILE__)
             socket = joinpath(testdir, "fcgi.socket")
-            cgiscript = joinpath(testdir, "hello.sh")
 
             # start server
             server = FCGIServer(socket)
+            @show server
+            set_server_runner(FastCGI.ProcessRunner)
+            set_server_param("FCGI_MAX_CONNS", "200")
             servertask = @async process(server)
             @test issocket(socket)
             @test isrunning(server)
 
             # run client
             client = FCGIClient(socket)
-            headers = Dict("SCRIPT_FILENAME"=>cgiscript)
-
-            # do multiple requests
-            for idx in 1:10
-                request = FCGIRequest(; headers=headers, keepconn=true)
-                process(client, request)
-                @test isrunning(client)
-                wait(request.isdone)
-                @test isempty(take!(request.err))
-                response = take!(request.out)
-                @test length(response) > 0
-            end
+            @show client
+            headers = Dict("DOCUMENT_ROOT"=>testdir, "SCRIPT_NAME"=>"/hello.sh")
+            do_requests(client, headers, "ProcessRunner over Unix Domain Sockets")
 
             # close
             close(client)
@@ -126,7 +122,6 @@ function test_clientserver()
         end
         @testset "TCP Socket" begin
             testdir = dirname(@__FILE__)
-            cgiscript = joinpath(testdir, "hello.sh")
             host = ip"127.0.0.1"
             port = 8989
 
@@ -138,17 +133,8 @@ function test_clientserver()
 
             # run client
             client = FCGIClient(host, port)
-            headers = Dict("SCRIPT_FILENAME"=>cgiscript)
-
-            # do multiple requests
-            for idx in 1:10
-                request = FCGIRequest(; headers=headers, keepconn=true)
-                process(client, request)
-                wait(request.isdone)
-                @test isempty(take!(request.err))
-                response = take!(request.out)
-                @test length(response) > 0
-            end
+            headers = Dict("DOCUMENT_ROOT"=>testdir, "SCRIPT_NAME"=>"hello.sh")
+            do_requests(client, headers, "ProcessRunner over TCP Sockets")
 
             # close
             close(client)
@@ -159,6 +145,82 @@ function test_clientserver()
     end
 end
 
+function testrunner(params, in, out, err)
+    println(out, """Content-type: text/html
+
+<html>
+<head>
+<meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+<title>Hello World</title>
+</head>
+<body>
+Hello World
+<pre>
+""")
+    for (n,v) in params
+        println(out, "$n = $v")
+    end
+    for (n,v) in ENV
+        println(out, "$n = $v")
+    end
+    println(out, """
+</pre>
+</body>
+</html>
+""")
+
+    flush(out)   
+    close(out)
+    close(err) 
+    return 0
+end
+
+function test_functionrunner()
+    @testset "Function Runner" begin
+        testdir = dirname(@__FILE__)
+        socket = joinpath(testdir, "fcgi.socket")
+
+        # start server
+        server = FCGIServer(socket)
+        @show server
+        set_server_runner(FastCGI.FunctionRunner)
+        set_server_param("FCGI_MAX_CONNS", "200")
+        servertask = @async process(server)
+        @test issocket(socket)
+        @test isrunning(server)
+
+        # run client
+        client = FCGIClient(socket)
+        @show client
+        headers = Dict("SCRIPT_FILENAME"=>"testrunner")
+        do_requests(client, headers, "FunctionRunner over Unix Domain Sockets")
+
+        # close
+        close(client)
+        stop(server)
+        @test !isrunning(client)
+        @test !isrunning(server)
+    end
+end
+
+function do_requests(client, headers, statname)
+    STATS[statname] = @timed for idx in 1:NLOOPS
+        request = FCGIRequest(; headers=headers, keepconn=true)
+        process(client, request)
+        @test isrunning(client)
+        wait(request.isdone)
+        @test isempty(take!(request.err))
+        response = take!(request.out)
+        @test length(response) > 0
+    end
+end
+
 test_bufferedoutput()
 test_types()
 test_clientserver()
+test_functionrunner()
+
+println("Times for $NLOOPS requests:")
+for (n,v) in STATS
+    println(n, ": ", v[2], " sec")
+end
