@@ -1,79 +1,3 @@
-abstract type Runner end
-
-"""
-Holds all the plumbing required for a running process or function
-"""
-struct Plumbing
-    inp::Pipe                               # stdin
-    out::Pipe                               # stdout
-    err::Pipe                               # stderr
-
-    function Plumbing()
-        new(Pipe(), Pipe(), Pipe())
-    end
-end
-
-function close(plumbing::Plumbing; inputendsonly::Bool=false)
-    if inputendsonly
-        close(plumbing.out.in)
-        close(plumbing.err.in)
-    else
-        close(plumbing.inp)
-        close(plumbing.out)
-        close(plumbing.err)
-    end
-    nothing
-end
-
-"""
-Holds the runner state.
-Items in this struct are needed in the runner task (Runner.runner).
-But keeping it in the struct makes it cleaner and also makes them accessible for debugging purpose.
-"""
-mutable struct ProcessRunner <: Runner
-    process::Union{Base.Process,Nothing}    # launched process
-
-    function ProcessRunner()
-        new(nothing)
-    end
-end
-
-function killproc(runner::ProcessRunner)
-    if runner.process !== nothing
-        kill(runner.process)
-        runner.process = nothing
-    end
-    nothing
-end
-
-function waitproc(runner::ProcessRunner)
-    wait(runner.process)
-    runner.process.exitcode
-end
-
-function launchproc(runner::ProcessRunner, plumbing::Plumbing, params::Dict{String,String})
-    cmdpath = getcommand(params)
-    @debug("launching command", cmdpath)
-    if !isfile(cmdpath)
-        err = "cmdpath not found: $cmdpath"
-        @warn(err)
-        return 404, err
-    end
-    try
-        cmd = Cmd(`$cmdpath`; env=params)
-        runner.process = run(pipeline(cmd, stdin=plumbing.inp, stdout=plumbing.out, stderr=plumbing.err), wait=false)
-        return 0, ""
-    catch ex
-        @warn("process exception", cmdpath, params, ex)
-        return 500, "process exception"
-    end
-end
-
-"""
-The runner type to use. Set this with the `set_server_runner` method.
-"""
-FCGI_RUNNER = ProcessRunner
-
 """
 Handles a single request.
 Invokes the process that would handle the CGI request, monitors it.
@@ -145,7 +69,7 @@ function streamstdin(req::ServerRequest)
                     stdinclosed = true
                 else
                     @debug("streamstdin: content", len=length(rec.content))
-                    write(inp, rec.content)
+                    write(Base.pipe_writer(inp), rec.content)
                 end
             else
                 # ignore (but warn) any unexpected messages for this request id
@@ -189,7 +113,7 @@ function monitorinputs(req::ServerRequest)
     nothing
 end
 
-function monitoroutput(req::ServerRequest, pipe::Pipe, type::UInt8)
+function monitoroutput(req::ServerRequest, pipe::Base.PipeEndpoint, type::UInt8)
     sent = false
     buffpipe = BufferedOutput() do bytes
         @debug("sending output", type=reqtypetostring(type), nbytes=length(bytes))
@@ -213,13 +137,18 @@ function monitoroutput(req::ServerRequest, pipe::Pipe, type::UInt8)
 end
 function monitoroutputs(req::ServerRequest)
     @sync begin
-        @async monitoroutput(req, req.plumbing.out, FCGIHeaderType.STDOUT)
-        @async monitoroutput(req, req.plumbing.err, FCGIHeaderType.STDERR)
+        @async monitoroutput(req, Base.pipe_reader(req.plumbing.out), FCGIHeaderType.STDOUT)
+        @async monitoroutput(req, Base.pipe_reader(req.plumbing.err), FCGIHeaderType.STDERR)
     end
 end
 function getcommand(params::Dict{String,String})
     get(params, "SCRIPT_FILENAME") do
-        params["DOCUMENT_ROOT"] * params["SCRIPT_NAME"]
+        script_name = strip(params["SCRIPT_NAME"])
+        # strip off leading `/` to ensure we look into scripts within document_root
+        while startswith(script_name, '/')
+            script_name = script_name[2:end]
+        end
+        joinpath(params["DOCUMENT_ROOT"], script_name)
     end
 end
 function close(req::ServerRequest, exitcode::Integer)

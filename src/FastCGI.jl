@@ -7,7 +7,8 @@ export FCGIServer, FCGIClient, FCGIRequest, process, isrunning, stop, set_server
 
 include("bufferedoutput.jl")
 include("types.jl")
-include("processhandler.jl")
+include("runners.jl")
+include("requesthandler.jl")
 include("server.jl")
 include("client.jl")
 
