@@ -5,11 +5,23 @@ const SERVER_PARAMS = Dict{String,String}(
     "FCGI_MPXS_CONNS"   =>  "1"
 )
 
+"""
+Set server parameters this server should respond with.
+Set values according to resources available on your system and the amount of load you wish this instance to take up.
+"""
 function set_server_param(name::String, value::String)
     SERVER_PARAMS[name] = value
     nothing
 end
 
+"""
+The runner type to use. Set this with the `set_server_runner` method.
+"""
+FCGI_RUNNER = ProcessRunner
+
+"""
+Set the runner type to use: `FastCGI.ProcessRunner` or `FastCGI.FunctionRunner`.
+"""
 function set_server_runner(runnertype)
     @assert supertype(runnertype) === Runner
     global FCGI_RUNNER
