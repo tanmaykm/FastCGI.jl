@@ -23,7 +23,7 @@ FCGI_RUNNER = ProcessRunner
 Set the runner type to use: `FastCGI.ProcessRunner` or `FastCGI.FunctionRunner`.
 """
 function set_server_runner(runnertype)
-    @assert supertype(runnertype) === Runner
+    @assert isa(runnertype, Function) || (supertype(runnertype) === Runner)
     global FCGI_RUNNER
     FCGI_RUNNER = runnertype
     nothing

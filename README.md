@@ -14,7 +14,7 @@ FastCGI.jl is a package that implements a Julia FastCGI client and server. Addit
 
 ### Using the server
 
-```
+```julia
 julia> using FastCGI
 
 julia> server = FCGIServer("/var/run/fcgi/fcgi.socket")
@@ -29,7 +29,7 @@ julia> process(server)
 
 ### Using the client
 
-```
+```julia
 julia> using FastCGI
 
 julia> client = FCGIClient("/var/run/fcgi/fcgi.socket")
@@ -53,13 +53,13 @@ FastCGI.jl server allows you to hook up a Julia function as a responder, instead
 
 To enable this mode, switch the runner to `FastCGI.FunctionRunner`:
 
-```
+```julia
 FastCGI.set_server_runner(FastCGI.FunctionRunner)
 ```
 
 Define the method that would respond to requests:
 
-```
+```julia
 function fastcgi_responder(params, in, out, err)
     # params: a Dict{String,String} with all fastcgi request parameters
     # in: input stream to be read from
@@ -72,3 +72,17 @@ end
 ```
 
 Send requests as usual, ensuring that the `SCRIPT_FILENAME` parameter in requests contains the fully qualified function name to invoke.
+
+### Handling Timeouts
+
+There is no timeout imposed on the scripts by default. But a fixed timeout can be imposed on the scripts by configuring the `Runner` appropriately.
+
+```julia
+# set up a FunctionRunner with 10 second timeout
+FastCGI.set_server_runner(()->FastCGI.FunctionRunner(10))
+
+# set up a ProcessRunner with 5 second timeout
+FastCGI.set_server_runner(()->FastCGI.ProcessRunner(5))
+```
+
+The server will terminate requests running longer than the timeout configured. A response code of 408 (Request Timeout) will be returned.

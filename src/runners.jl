@@ -37,23 +37,45 @@ Runs fast CGI commands as processes. Holds the runner process and allows waiting
 """
 mutable struct ProcessRunner <: Runner
     process::Union{Base.Process,Nothing}    # launched process
+    timeout::Int                            # time the process out after these many seconds
+    timer::Union{Timer,Nothing}             # timer to kill the running process after timeout
 
-    function ProcessRunner()
-        new(nothing)
+    function ProcessRunner(timeout::Int=-1)
+        new(nothing, timeout, nothing)
     end
 end
 
 function killproc(runner::ProcessRunner)
     if runner.process !== nothing
-        kill(runner.process)
+        try
+            kill(runner.process)
+        catch ex
+            @warn("failed to kill process with SIGTERM, will issue SIGKILL")
+            try
+                kill(runner.process, Base.SIGKILL)
+            catch ex
+                @warn("failed to kill process with SIGKILL, abandoning")
+            end
+        end
         runner.process = nothing
     end
+    closetimer(runner)
     nothing
 end
 
 function waitproc(runner::ProcessRunner)
-    wait(runner.process)
-    runner.process.exitcode
+    exitcode = 408
+    try
+        wait(runner.process)
+        if runner.process !== nothing
+            exitcode = runner.process.exitcode
+        end
+    catch ex
+        @warn("exception waiting for process", ex)
+    end
+    runner.process = nothing
+    closetimer(runner)
+    exitcode
 end
 
 function launchproc(runner::ProcessRunner, plumbing::Plumbing, params::Dict{String,String})
@@ -67,6 +89,7 @@ function launchproc(runner::ProcessRunner, plumbing::Plumbing, params::Dict{Stri
     try
         cmd = Cmd(`$cmdpath`; env=params)
         runner.process = run(pipeline(cmd, stdin=plumbing.inp, stdout=plumbing.out, stderr=plumbing.err), wait=false)
+        setuptimer(runner, plumbing.out, plumbing.err)
         return 0, ""
     catch ex
         @warn("process exception", cmdpath, params, ex)
@@ -78,10 +101,12 @@ end
 Runs fast CGI commands as Julia functions. Holds the runner task and allows waiting and terminating (interrupting) the task.
 """
 mutable struct FunctionRunner <: Runner
-    process::Union{Task,Nothing}
+    process::Union{Task,Nothing}     # launched process
+    timeout::Int                     # time the process out after these many seconds
+    timer::Union{Timer,Nothing}      # timer to kill the running process after timeout
 
-    function FunctionRunner()
-        new(nothing)
+    function FunctionRunner(timeout::Int=-1)
+        new(nothing, timeout, nothing)
     end
 end
 
@@ -94,12 +119,24 @@ function killproc(runner::FunctionRunner)
         end
     end
     runner.process = nothing
+    closetimer(runner)
     nothing
 end
 
 function waitproc(runner::FunctionRunner)
-    wait(runner.process)
-    Int(fetch(runner.process))
+    result = 408
+    try
+        wait(runner.process)
+        if runner.process !== nothing
+            result = Int(fetch(runner.process))
+        end
+    catch ex
+        # ignore (may have been interrupted)
+        @warn("exception waiting for process", ex)
+    end
+    runner.process = nothing
+    closetimer(runner)
+    result
 end
 
 function launchproc(runner::FunctionRunner, plumbing::Plumbing, params::Dict{String,String})
@@ -120,9 +157,33 @@ function launchproc(runner::FunctionRunner, plumbing::Plumbing, params::Dict{Str
     try
         link(plumbing)
         runner.process = @async cmd(params, Base.pipe_reader(plumbing.inp), Base.pipe_writer(plumbing.out), Base.pipe_writer(plumbing.err))
+        setuptimer(runner, Base.pipe_writer(plumbing.out), Base.pipe_writer(plumbing.err))
         return 0, ""
     catch ex
         @warn("process exception", cmdpath, params, ex)
         return 500, "process exception"
     end
+end
+
+function closetimer(runner::Union{ProcessRunner,FunctionRunner})
+    if runner.timer !== nothing
+        try
+            close(runner.timer)
+        catch ex
+            @warn("exception closing timer", ex)
+        end
+        runner.timer = nothing
+    end
+    nothing
+end
+
+function setuptimer(runner::Union{ProcessRunner,FunctionRunner}, out, err)
+    if runner.timeout > 0
+        runner.timer = Timer(runner.timeout) do timer
+            close(out)
+            close(err)
+            killproc(runner)
+        end
+    end
+    nothing
 end
