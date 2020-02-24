@@ -145,6 +145,74 @@ function test_clientserver()
     end
 end
 
+function test_clientservertimeout()
+    @testset "client-server timeout" begin
+        @testset "Unix Domain Socket Timeout" begin
+            testdir = dirname(@__FILE__)
+            socket = joinpath(testdir, "fcgi.socket")
+
+            # start server
+            server = FCGIServer(socket)
+            @show server
+            set_server_runner(()->FastCGI.ProcessRunner(5))
+            servertask = @async process(server)
+            @test issocket(socket)
+            @test isrunning(server)
+
+            # run client
+            client = FCGIClient(socket)
+            @show client
+            headers = Dict("DOCUMENT_ROOT"=>testdir, "SCRIPT_NAME"=>"/hello.sh")
+            do_request(client, headers)
+            close(client)
+            @test !isrunning(client)
+
+            # run timeout test
+            client = FCGIClient(socket)
+            @show client
+            headers = Dict("DOCUMENT_ROOT"=>testdir, "SCRIPT_NAME"=>"/timeout.sh")
+            do_request_timeout(client, headers)
+            close(client)
+            @test !isrunning(client)
+
+            # close
+            stop(server)
+            @test !isrunning(server)
+        end
+        @testset "TCP Socket Timeout" begin
+            testdir = dirname(@__FILE__)
+            host = ip"127.0.0.1"
+            port = 8989
+
+            # start server
+            server = FCGIServer(host, port)
+            set_server_runner(()->FastCGI.ProcessRunner(5))
+            servertask = @async process(server)
+            @test isa(server.lsock, Sockets.TCPServer)
+            @test isrunning(server)
+
+            # run client
+            client = FCGIClient(host, port)
+            headers = Dict("DOCUMENT_ROOT"=>testdir, "SCRIPT_NAME"=>"hello.sh")
+            do_request(client, headers)
+            close(client)
+            @test !isrunning(client)
+
+            # run timeout test
+            client = FCGIClient(host, port)
+            @show client
+            headers = Dict("DOCUMENT_ROOT"=>testdir, "SCRIPT_NAME"=>"/timeout.sh")
+            do_request_timeout(client, headers)
+            close(client)
+            @test !isrunning(client)
+
+            # close
+            stop(server)
+            @test !isrunning(server)
+        end
+    end
+end
+
 function testrunner(params, in, out, err)
     println(out, """Content-type: text/html
 
@@ -173,6 +241,11 @@ Hello World
     close(out)
     close(err) 
     return 0
+end
+
+function testtimeoutrunner(params, in, out, err)
+    sleep(15)
+    testrunner(params, in, out, err)
 end
 
 function test_functionrunner()
@@ -215,10 +288,67 @@ function do_requests(client, headers, statname)
     end
 end
 
+function do_request(client, headers)
+    request = FCGIRequest(; headers=headers, keepconn=false)
+    process(client, request)
+    @test isrunning(client)
+    wait(request.isdone)
+    @test isempty(take!(request.err))
+    response = take!(request.out)
+    @test length(response) > 0
+end
+
+function do_request_timeout(client, headers)
+    request = FCGIRequest(; headers=headers, keepconn=false)
+    process(client, request)
+    @test isrunning(client)
+    wait(request.isdone)
+    response = take!(request.out)
+    @test length(response) == 0
+end
+
+function test_functionrunner_timeout()
+    @testset "Function Runner Timeout" begin
+        testdir = dirname(@__FILE__)
+        socket = joinpath(testdir, "fcgi.socket")
+
+        # start server
+        server = FCGIServer(socket)
+        @show server
+        set_server_runner(()->FastCGI.FunctionRunner(5))
+        servertask = @async process(server)
+        @test issocket(socket)
+        @test isrunning(server)
+
+        # run client
+        client = FCGIClient(socket)
+        @show client
+        headers = Dict("SCRIPT_FILENAME"=>"testrunner")
+        do_request(client, headers)
+        close(client)
+        @test !isrunning(client)
+
+        # run timeout test
+        client = FCGIClient(socket)
+        @show client
+        headers = Dict("SCRIPT_FILENAME"=>"testtimeoutrunner")
+        do_request_timeout(client, headers)
+        
+        close(client)
+        @test !isrunning(client)
+
+        # close
+        stop(server)
+        @test !isrunning(server)
+    end
+end
+
 test_bufferedoutput()
 test_types()
 test_clientserver()
 test_functionrunner()
+test_functionrunner_timeout()
+test_clientservertimeout()
 
 println("Times for $NLOOPS requests:")
 for (n,v) in STATS
