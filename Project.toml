@@ -1,7 +1,7 @@
 name = "FastCGI"
 uuid = "e8c3bf11-b54e-5fcf-8bd0-49e7696ff13f"
 authors = ["Tanmay Mohapatra <tanmaykm@gmail.com>"]
-version = "0.2.0"
+version = "0.2.1"
 keywords = ["fastcgi", "julialang"]
 license = "MIT"
 desc = "Julia FastCGI client and server implementation"
