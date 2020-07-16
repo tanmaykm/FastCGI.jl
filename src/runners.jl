@@ -182,6 +182,7 @@ function setuptimer(runner::Union{ProcessRunner,FunctionRunner}, out, err)
         runner.timer = Timer(runner.timeout) do timer
             close(out)
             close(err)
+            @warn "Killing the process due to timeout"
             killproc(runner)
         end
     end
